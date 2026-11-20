@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Async Job Queue Dashboard</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; color: #1e293b; }
+    form { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-bottom: 1.5rem; padding: 1rem; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }
+    input[type="text"] { flex: 1; min-width: 220px; padding: 0.5rem; border: 1px solid #cbd5e1; border-radius: 6px; }
+    button { padding: 0.55rem 1.1rem; background: #2563eb; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }
+    button:hover { background: #1d4ed8; }
+    .job-card { display: flex; justify-content: space-between; align-items: center; padding: 0.9rem 1rem; margin-bottom: 0.75rem; border: 1px solid #e2e8f0; border-radius: 8px; }
+    .badge { padding: 0.25rem 0.65rem; border-radius: 999px; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; }
+    .queued { background: #fef3c7; color: #92400e; }
+    .processing { background: #dbeafe; color: #1e40af; }
+    .completed { background: #dcfce7; color: #166534; }
+    .failed { background: #fee2e2; color: #991b1b; }
+    .meta { font-size: 0.82rem; color: #64748b; margin-top: 0.25rem; }
+  </style>
+</head>
+<body>
+  <h1>Event-Driven Job Queue</h1>
+  <form id="jobForm">
+    <input type="text" id="taskName" placeholder="e.g., Generate Q4 Invoice PDF" required />
+    <label style="font-size: 0.85rem;">
+      <input type="checkbox" id="simulateFailure" />
+      Simulate transient failure (NACK/Retry)
+    </label>
+    <button type="submit">Submit Job</button>
+  </form>
+
+  <div id="jobsList"></div>
+
+  <script>
+    const form = document.getElementById('jobForm');
+    const jobsList = document.getElementById('jobsList');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const taskName = document.getElementById('taskName').value.trim();
+      const simulateTransientFailure = document.getElementById('simulateFailure').checked;
+
+      const res = await fetch('/api/jobs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskName, simulateTransientFailure }),
+      });
+
+      if (res.status !== 202) {
+        alert('Failed to submit job');
+        return;
+      }
+
+      const { jobId, status } = await res.json();
+      document.getElementById('taskName').value = '';
+      renderJobCard(jobId, taskName, status, 'Accepted (HTTP 202)');
+      pollJobStatus(jobId, taskName);
+    });
+
+    function renderJobCard(jobId, taskName, status, detail) {
+      let card = document.getElementById(jobId);
+      if (!card) {
+        card = document.createElement('div');
+        card.id = jobId;
+        card.className = 'job-card';
+        jobsList.prepend(card);
+      }
+      card.innerHTML = `
+        <div>
+          <strong>${taskName}</strong>
+          <div class="meta">${jobId} • ${detail}</div>
+        </div>
+        <span class="badge ${status}">${status}</span>
+      `;
+    }
+
+    function pollJobStatus(jobId, taskName) {
+      const interval = setInterval(async () => {
+        const res = await fetch(`/api/jobs/${jobId}`);
+        if (!res.ok) return clearInterval(interval);
+
+        const data = await res.json();
+        const detail =
+          data.status === 'completed'
+            ? `Finished in ${data.result.durationMs}ms (Attempts: ${data.attemptsMade || 1})`
+            : data.failedReason
+            ? `Retry pending: ${data.failedReason}`
+            : `Attempts: ${data.attemptsMade}`;
+
+        renderJobCard(jobId, taskName, data.status, detail);
+
+        if (data.status === 'completed' || data.status === 'failed') {
+          clearInterval(interval);
+        }
+      }, 500);
+    }
+  </script>
+</body>
+</html>
